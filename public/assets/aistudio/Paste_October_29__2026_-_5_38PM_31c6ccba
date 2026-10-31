@@ -1,0 +1,253 @@
+# TECHNICAL & GAME DESIGN SPECIFICATION: "SURVEV PVE: TACTICAL STRIKE" (PRO EDITION)
+
+## 0. DIRECTIVAS DE SISTEMA INQUEBRANTABLES (SYSTEM CONSTRAINTS)
+Actúa como un Arquitecto Principal de Motores de Videojuegos 2D (WebGL/Canvas) y Diseñador Senior de UI/UX Mobile (estilo *Blood Strike*, *Surviv.io*, *Apex Legends Mobile*).
+Estamos desarrollando sobre **React + Vite + Tailwind CSS** con el objetivo de empaquetar una **APK de Android mediante Capacitor** y jugarlo también en PC.
+
+### Reglas Estrictas de Codificación:
+1. **CERO CÓDIGO TRUNCADO:** Está terminantemente prohibido usar comentarios perezosos como `// TODO`, `// añade el resto de las armas aquí`, `// ...resto del código`. Todo archivo entregado debe estar 100% completo y listo para producción.
+2. **ARQUITECTURA DESACOPLADA A 60 FPS:** El bucle principal del juego (`requestAnimationFrame`) y todas las entidades (jugadores, aliados, balas, partículas, zombies, colisiones) DEBEN vivir en una referencia mutable (`useRef` o instancia de clase de motor en JS puro) fuera del estado reactivo de React. **PROHIBIDO ejecutar `setState` a 60 FPS.** Sincroniza la telemetría del motor hacia la interfaz de React únicamente cada `100ms` (10 Hz) o cuando ocurra un evento discreto (cambiar de arma, abrir tienda, recibir daño, nuevo mensaje de chat).
+3. **CERO "GRÁFICOS HTML BÁSICOS":** Prohibido dibujar el juego con simples círculos planos (`ctx.arc` con un color sólido básico) o casas que sean solo un cuadrado vacío. Todo debe tener texturas procedurales pre-renderizadas en memoria (`OffscreenCanvas`), sombreado multicapa, biseles, mobiliario interior detallado, armas compuestas por piezas vectoriales y efectos balísticos de alta fidelidad.
+4. **HUD MÓVIL ULTRA-COMPACTO Y MODO HORIZONTAL OBLIGATORIO:** El HUD jamás debe tapar la pantalla. El 90% del área visual debe quedar completamente despejada.
+
+---
+
+## 1. MODO HORIZONTAL ESTRICTO (LANDSCAPE LOCK) Y CONTROLES MÓVILES
+1. **Bloqueo de Orientación (Portrait Blocker):**
+   - Detecta continuamente `window.innerWidth` y `window.innerHeight`.
+   - Si `innerHeight > innerWidth`, superpón una pantalla absoluta (`fixed inset-0 z-[9999] bg-zinc-950 flex flex-col items-center justify-center text-white`) con un icono SVG animado de un teléfono girando a horizontal y el texto: *"MODO HORIZONTAL REQUERIDO — Gira tu dispositivo para desplegar en el sector"*. Mientras esté activo, pausa el `gameLoop`.
+2. **Dynamic Floating Dual Joysticks (Solo en Pantallas Táctiles / Mobile):**
+   - **Mitad Izquierda (`x < window.innerWidth * 0.45`):** Joystick virtual dinámico de movimiento. Es **invisible** por defecto; al tocar la pantalla (`onTouchStart`), el centro de la base se posiciona exactamente en las coordenadas del pulgar (`touch.clientX, touch.clientY`), con un radio máximo de `48px` y opacidad `0.45`.
+     - **Auto-Sprint Táctico:** Si el jugador estira el pulgar más allá del `88%` del radio máximo del joystick izquierdo, se activa automáticamente el **Sprint** (consumiendo Stamina) y el anillo exterior brilla en color cian (`#06b6d4`).
+   - **Mitad Derecha (`x >= window.innerWidth * 0.45`):** Joystick virtual dinámico de apuntado 360° y disparo. Al deslizar el pulgar derecho (`> 20%` del radio), el personaje apunta en ese ángulo exacto (`Math.atan2`). Al estirar más allá del `65%` del radio, el arma dispara automáticamente (respetando cadencia `fireRate` o modo ráfaga/semiautomático).
+   - **Botones Flotantes Táctiles Compactos (Esquina Inferior Derecha, arriba del arma):**
+     - 4 botones circulares pequeños (`w-9 h-9 rounded-full bg-black/45 border border-white/20 backdrop-blur-sm text-[11px] text-white active:scale-90`) con iconos vectoriales limpios:
+       1. `[R]` Recargar arma actual.
+       2. `[F]` Interactuar (Abrir puertas / Entrar a Búnker / Reanimar compañero / Tomar Loot).
+       3. `[G]` Lanzar arrojadiza seleccionada.
+       4. `[🛒]` Abrir Tienda Táctica (cuando estés en rango de una estación de compra o entre oleadas).
+3. **Controles de Escritorio (PC):**
+   - `WASD` movimiento, `[Shift]` mantener para Sprint, `Mouse` apuntar, `Clic Izquierdo` disparar, `Clic Derecho` en el suelo para enviar ping táctico o en el HUD para soltar ítems, `[R]` recargar, `[F]` interactuar/reanimar, `[G]` lanzar granada, `[1-4]` cambiar slots, `[7-0]` usar curas/adrenalina, `[B]` tienda, `[M]` mapa completo, `[T]` o `[Enter]` abrir/enviar chat de escuadrón.
+
+---
+
+## 2. DISEÑO DEL HUD ULTRA-MINIMALISTA (ESCALA MICRO-TÁCTICA)
+Todos los paneles del HUD deben usar fuentes pequeñas (`text-[9px]` a `text-[11px]`), fondos oscuros translúcidos (`bg-zinc-950/55 backdrop-blur-md border border-white/10`) y márgenes mínimos pegados a los bordes seguros de la pantalla:
+
+1. **Clúster Inferior Central (Estado Vital del Jugador - Ancho máx. `175px`):**
+   - Posición: `fixed bottom-1.5 left-1/2 -translate-x-1/2 z-20 pointer-events-none`.
+   - **Barra de Salud (HP):** Altura `6px`, fondo `bg-zinc-800`, relleno blanco (`#f8fafc`), cambia a ámbar (`#f59e0b`) si `< 50%` y rojo pulsante (`#ef4444`) si `< 25%`. Texto superpuesto diminuto a la derecha: `100`.
+   - **Barra de Adrenalina (Sodas/Píldoras):** Altura `3.5px`, dividida visualmente en 4 segmentos (`25%`, `50%`, `75%`, `100%`) con gradiente naranja-dorado (`from-orange-500 to-amber-300`).
+     - *Mecánica:* 100% independiente de la Stamina. Se llena tomando Sodas (`+25%`) o Píldoras (`+50%`). Se drena muy lentamente (`0.08%` por segundo). Si `adrenaline > 0`, regenera vida pasivamente (`+1.2 HP/s` si `<50%`, `+2.8 HP/s` si `>50%`) y da un bono pasivo de velocidad de `+8%`.
+   - **Barra de Stamina (Sprint con `[Shift]`):** Altura `3.5px`, color azul eléctrico/cian (`#06b6d4`).
+     - *Mecánica Balanceada:* Capacidad `100`. Correr con `[Shift]` o joystick al tope otorga un multiplicador de velocidad controlado de **`1.24x` (+24% de velocidad)** para que sea ágil pero realista. Drena a razón de `30 unidades/segundo` (~3.3 segundos de sprint continuo). Se recarga lentamente (`11 unidades/s` caminando y `18 unidades/s` estando quieto). Si llega a `0`, el jugador entra en estado `exhausted = true` (la barra parpadea en rojo/gris) y **no puede volver a correr hasta que la barra recupere al menos `32%`**.
+   - **Micro-Indicadores Laterales (pegados a la izquierda/derecha del clúster):**
+     - Casco (`Lv.0` a `Lv.3`), Chaleco (`Lv.0` a `Lv.3`), Mochila (`Lv.1` a `Lv.3`), Mira activa (`1x`, `2x`, `4x`, `8x`) y **Créditos Cobalto (`$0`)** en texto verde neón (`text-emerald-400 font-bold text-[10px]`).
+2. **Esquina Superior Izquierda (Minimapa + Escuadrón Compacto + Barra de Órdenes):**
+   - **Minimapa Radar:** Cuadrado de `84px x 84px` (`w-[84px] h-[84px] rounded border border-white/25 bg-black/60 overflow-hidden cursor-pointer`). Muestra el río, edificios cercanos, zonas de búnker, iconos de carritos de Tienda (`🛒`), puntos de colores de tus compañeros y tu cono de visión. Al tocarlo o pulsar `[M]`, abre el Mapa Global.
+   - **Tarjetas Micro del Escuadrón:** Debajo del minimapa (`w-[115px] space-y-0.5`), 4 filas ultra-delgadas (`py-0.5 px-1 bg-black/45 rounded text-[8.5px]`) para **Logan (Azul `#3b82f6`), Wyatt (Amarillo `#eab308`), Nolan (Morado `#a855f7`) y Brody (Verde `#10b981`)**. Cada fila muestra: punto de color, nombre, mini-barra de HP (`h-1`), nombre corto de su arma y su estado (`Loteando`, `Kiteando`, `Reanimando`, `Quieto`, `Abatido`, `Muerto`).
+   - **Barra Rápida de 6 Órdenes Tácticas:** Debajo del escuadrón, una cuadrícula compacta (`grid grid-cols-3 gap-0.5 w-[115px]`):
+     - `🤖Libre` (Modo Autónomo por defecto)
+     - `🏠Lotear` (Priorizar cajas y casas)
+     - `🎯Cazar` (Buscar y destruir zombies agresivamente)
+     - `✋Quieto` (Mantener posición actual sin seguirte)
+     - `🏃Venir` (Reagruparse contigo)
+     - `🕊️Paz` (Alto al fuego: no disparan para dejarte todas las bajas a ti)
+3. **Esquina Superior Derecha (Info de Oleada + Killfeed + Ajustes):**
+   - Píldora compacta (`text-[10px] px-2 py-0.5 bg-black/50 rounded`): `Ronda X | 🧟 Restantes: Y | ⏱️ Estado`.
+   - Botón diminuto de Ajustes `⚙️` (para configurar volumen, calidad de partículas y pegar la API Key opcional de Gemini Cloud).
+4. **Esquina Inferior Derecha (Arsenal + Contadores de Munición/Curas + DROP INTERACTIVO):**
+   - **Fila de Municiones y Medicinas (`flex gap-1 mb-1 justify-end`):** Píldoras miniatura (`text-[8.5px] px-1.5 py-0.5 rounded bg-black/60 border border-white/10 pointer-events-auto cursor-pointer select-none`):
+     - Municiones: `9mm` (amarillo), `12g` (rojo), `5.56` (verde), `7.62` (azul), `.50 AE / .308` (oliva).
+     - Curas: `🩹Venda [7]`, `🧰Botiquín [8]`, `🥤Soda [9]`, `💊Píldoras [0]`.
+   - **4 Slots de Armas (`flex gap-1`):** Cuadros compactos (`w-14 h-8 rounded bg-zinc-900/75 border border-white/15 p-0.5 text-[8.5px]`):
+     - `Slot 1` (Primaria), `Slot 2` (Secundaria), `Slot 3` (Melee), `Slot 4` (Arrojadiza: Frag / MIRV / Humo / Strobe Aéreo).
+     - Muestra el icono vectorial del arma, su nombre y las balas `cargador / reserva` (o `/ ∞` si tiene la Perk de munición infinita).
+   - **MECÁNICA OBLIGATORIA DE SOLTAR ÍTEMS (DROP):**
+     - Si el jugador hace **Clic Derecho** (`onContextMenu`) en PC o **Mantiene Presionado por `400ms`** (`onTouchStart` / `onTouchEnd` timer) en móvil sobre:
+       - Un contador de munición: suelta al suelo el `25%` o un paquete estándar de ese calibre frente a Cole.
+       - Una medicina/adrenalina: suelta `1 unidad` al suelo.
+       - El Slot 1 o Slot 2 de arma: suelta el arma equipada al suelo (volviendo a puños/melee) y deja las balas en la mochila.
+       - El icono de Casco o Chaleco: suelta la pieza de armadura al suelo.
+     - Todo ítem soltado por el jugador debe tener un `pickupCooldown = 1.5s` para que el propio jugador no lo re-absorba accidentalmente al instante, pero los compañeros IA sí puedan recogerlo de inmediato si lo necesitan.
+5. **Menú Principal Minimalista (Solo lo Esencial):**
+   - Al abrir el juego, muestra un fondo animado del mapa con una tarjeta central limpia, oscura y elegante (`max-w-sm w-full p-4 rounded-xl bg-zinc-900/90 border border-white/15`):
+     - Título corto: **SURVEV PVE**
+     - Input de Nombre (por defecto: `Cole`).
+     - Selector de Bioma (`Bosque`, `Sabana`, `Ártico`, `Cobalto`).
+     - Selector de Escuadrón (`Solo (1)`, `Dúo (2)`, `Squad (4)`, `Quinteta (5)`).
+     - Dos botones claros: **JUGAR** y **CONTROLES / API**. Cero párrafos largos ni textos promocionales innecesarios.
+
+---
+
+## 3. MOTOR GRÁFICO 2D REALISTA TOP-DOWN (PROCEDURAL & VECTORIAL)
+Diseña un módulo `src/engine/renderer.js` y `src/engine/textures.js` que logre la estética táctica limpia y detallada de *Surviv.io / Survev*:
+
+1. **Texturas Pre-Renderizadas en Caché (`OffscreenCanvas`):**
+   - Genera patrones repetibles (`ctx.createPattern`) al cargar la partida:
+     - **Pasto de Bioma:** Base con variaciones de tono, micro-briznas de hierba, piedrecillas y hojas caídas.
+     - **Agua del Río:** Gradiente profundo en el centro, espuma suave en la orilla, ondas sinusoidales animadas en tiempo real y orilla de arena húmeda (`sandbank`) de `95px` de ancho.
+     - **Pisos de Interiores:** Entarimado de tablones de madera cálida con vetas y clavos para cabañas/casas; baldosas de cerámica blanca/gris para clínicas; concreto industrial con líneas de advertencia amarillas/negras para almacenes; rejilla metálica oscura oxidada para los 5 búnkeres.
+2. **Sombreado y Profundidad:**
+   - Aplica sombras proyectadas suaves (`shadowColor = 'rgba(0,0,0,0.48)'`, `shadowBlur = 10`, `shadowOffsetX = 4`, `shadowOffsetY = 5`) en muros, muebles, cajas, rocas, árboles y personajes.
+   - **Árboles Multicapa (`map-tree`):** Tronco central marrón oscuro con anillos de corteza (colisión sólida de `26px`) y una copa frondosa de 3 capas lobuladas superpuestas (`radius = 95px`). Si el jugador o un aliado está debajo de la copa (`dist < 95px`), el `alpha` del follaje baja suavemente a `0.32` para dejar ver el combate debajo.
+   - **Rocas Facetadas (`map-stone`):** Polígonos irregulares de 7 a 9 lados con caras iluminadas y caras en sombra (efecto biselado 3D top-down) que se encogen ligeramente a medida que reciben daño.
+3. **Anatomía del Personaje y Armas Vectoriales Detalladas:**
+   - Cuerpo circular con borde oscuro de `3px` (estilo oficial Surviv), mochila visible en la espalda (crece según Lv.1-3), casco superpuesto con visera/borde táctico según nivel y chaleco antibalas visible sobre el torso.
+   - Dos manos esféricas con borde oscuro que se posicionan dinámicamente según el tipo de arma (`pistol`, `smg`, `shotgun`, `assault`, `sniper`, `lmg`, `melee`) y sufren retroceso (`recoilOffset`) hacia atrás con cada disparo.
+   - **Armas Compuestas:** Dibuja cada arma con múltiples rectángulos/polígonos: culata, cajón de mecanismos, cargador curvo (AK-47) o tambor circular (DP-28, M249, Saiga, USAS-12), guardamanos ventilado, cañón, freno de boca/silenciador (VSS, Groza-S, AWM-S) y mira telescópica superior.
+4. **Balística, Fogonazos, Casquillos y Limpieza Automática (Fade-Out Estricto):**
+   - **Proyectiles con Trazadora:** Las balas viajan a alta velocidad dejando una estela luminosa degradada (`lineTo` desde `prevX, prevY`) del color de su calibre.
+   - **Muzzle Flash:** Al disparar, dibuja en la punta del cañón una estrella de fuego amarilla/blanca/naranja durante `55ms` con halo luminoso.
+   - **Casquillos Eyectados (`ShellCasings`):** Cada disparo expulsa hacia la derecha del arma un pequeño cilindro de latón dorado (o cartucho rojo para escopetas) con velocidad lateral, velocidad angular de giro y fricción contra el suelo.
+   - **REGLA DE ORO DE LIMPIEZA VISUAL:** Todos los casquillos, manchas de sangre roja al herir/matar zombies, astillas de madera y cráteres negros de explosión se almacenan en un arreglo `decals[]` con `life = 8.0` segundos y `maxLife = 8.0`. En cada frame resta `dt`; durante los últimos 2.5 segundos su `alpha` disminuye linealmente hasta `0` y se eliminan del arreglo. **Jamás dejes manchas ni cráteres permanentes en el mapa.**
+
+---
+
+## 4. MUNDO GIGANTE (15,000 x 15,000), CASAS MULTICÁMARA AMUEBLADAS Y 5 BÚNKERES
+Construye en `src/engine/worldGen.js` un mapa rico y denso de `15,000 x 15,000` unidades:
+
+1. **Río Principal y Puentes:**
+   - Un río sinuoso de `420px` de ancho que cruza el mapa con curvas suaves (`Math.sin`), playas de arena en ambas riberas y **4 Puentes Grandes** (2 de madera reforzada y 2 puentes militares metálicos con barricadas y cajas). El agua reduce la velocidad de movimiento un `28%` y genera ondas circulares alrededor de quien nada.
+2. **Más de 45 Estructuras con Habitaciones Internas y Muebles Reales:**
+   - Prohibido hacer edificios que sean simples rectángulos vacíos. Diseña plantillas arquitectónicas variadas:
+     - **Mansión / Casa Grande:** Dividida por muros interiores en 4 cuartos (Sala de estar, Cocina-Comedor, Dormitorio Principal, Estudio/Armería) con puertas internas y externas.
+     - **Clínica Médica:** Recepción, pasillo y 2 consultorios con camillas, botiquines y máquinas de soda/píldoras.
+     - **Almacén Militar / Hangar:** Doble entrada ancha, oficinas laterales y estanterías industriales.
+     - **Cabaña de Guardabosques:** Porche exterior de madera, sala con chimenea/estufa y cuarto trasero.
+   - **Mobiliario Detallado con Colisión (Destructible):**
+     - Dibuja dentro de las habitaciones muebles reconocibles vistos desde arriba:
+       - **Camas:** Marco de madera, colchón blanco y almohadas + cobija de color.
+       - **Mesas y Escritorios:** Superficie de madera/metal con sillas alrededor o monitores de computadora encima.
+       - **Sofás:** Sillones en L o de 3 plazas con cojines.
+       - **Estanterías / Libreros:** Muebles pegados a la pared con libros de colores o cajas de herramientas (sueltan munición o miras al romperse).
+       - **Electrodomésticos y Baño:** Refrigeradores blancos/plateados (sueltan sodas), estufas, lavabos e inodoros (sueltan vendas/píldoras al romperse).
+       - **Alfombras:** Tapetes decorativos tejidos en el centro de las salas (sin colisión, dibujados sobre el piso).
+   - **Puertas Interactivas y Destructibles:** Se abren/cierran girando `90°` suavemente al pulsar `[F]` (o automáticamente cuando un aliado IA pasa por ellas) y pueden destruirse a balazos o con granadas saltando en astillas.
+   - **Techos Inteligentes:** Cada edificio tiene su techo con tejas, láminas o tragaluces. Cuando Cole o un aliado al que espectas entra al `boundingBox` del edificio, `roofAlpha` baja suavemente a `0` (`lerp`).
+   - **REGLA OBLIGATORIA DE CAJAS POR CASA:** En absolutamente **CADA edificio** deben generarse garantizadas entre **1 y 3 cajas de loot** en el interior de sus habitaciones (cajas de madera básicas con tablones cruzados, cajas soviéticas con el icono de la hoz y el martillo, cajas de granadas o máquinas de sodas), ubicadas estratégicamente junto a las paredes para no bloquear el paso de las puertas.
+3. **Los 5 Búnkeres Subterráneos Aislados (`Hydra`, `Crisálida`, `Tormenta`, `Caracola`, `Cruce`):**
+   - Distribuidos por el mapa con una caseta blindada de concreto en la superficie y un icono de escalera amarilla/negra.
+   - **Aislamiento Físico:** El interior subterráneo del búnker se ubica en coordenadas reservadas fuera del flujo terrestre o en una capa aislada con muros indestructibles de acero oscuro. **Únicamente se puede entrar y salir interactuando con `[F]` en las escaleras de entrada/salida.**
+   - **Interior del Búnker:** Sala de generadores con tuberías de vapor, sala de servidores con luces LED parpadeantes, entre 3 y 5 cajas soviéticas/militares y una **Cápsula de Búnker Sellada (Vault Pod)** en la cámara principal.
+
+---
+
+## 5. ARSENAL COMPLETO, PROGRESIÓN REALISTA, EXPLOSIVOS Y TIENDA BLOOD STRIKE
+Configura en `src/config/constants.js` un catálogo balanceado con diferencias claras de cadencia, dispersión, velocidad de recarga y daño:
+
+1. **Tabla de Armas por Tiers:**
+   - **Tier 1 (Inicio y Cajas Básicas - Rondas 1+):**
+     - `Glock 18C` (9mm, ráfaga rápida/auto, alta dispersión), `M9` (9mm, semiauto precisa), `OT-38` (7.62mm, revólver lento pero potente), `MP5` (9mm, SMG equilibrada), `MAC-10` (9mm, cadencia extrema a corta distancia), `M870` (12g, escopeta de corredera clásica), `M1100` (12g, semiauto ligera).
+   - **Tier 2 (Cajas Soviéticas y Casas Grandes - Rondas 2+):**
+     - `AK-47` (7.62mm, buen daño), `M4A1-S` (5.56mm, muy estable), `UMP9` (9mm, ráfaga de 3 tiros precisa), `DP-28` (7.62mm, tambor de 60 balas), `FAMAS` (5.56mm, ráfaga letal), `SPAS-12` (12g, perdigones densos con mayor alcance), `Mosin-Nagant` (7.62mm, francotirador de cerrojo), `Desert Eagle` (.50 AE, pistola devastadora).
+   - **Tier 3 (Cajas Militares Pro y Jefes - Rondas 3+):**
+     - `SCAR-H` (7.62mm, rifle pesado de élite), `Vector` (9mm, cadencia vertiginosa), `Saiga-12` (12g, escopeta automática de tambor), `VSS Vintorez` (9mm, francotirador automático silenciado), `Mk 12 SPR` (5.56mm, DMR rápido), `SV-98` (7.62mm, francotirador de alto calibre).
+   - **Tier 4: ARMAS MÍTICAS / OP (BLOQUEADAS EN RONDAS 1 A 3 — Solo salen en Cápsulas de Búnker, Airdrops o Tienda a partir de la Oleada 4+):**
+     - `AWM-S` (.308 Subsonic, daño masivo de 185, atraviesa hasta 2 zombies en línea).
+     - `M249 SAW` (5.56mm, ametralladora ligera de 100 balas por cinta).
+     - `PKP Pecheneg` (7.62mm, ametralladora pesada de 200 balas).
+     - `USAS-12` (12g FRAG, escopeta automática cuyos proyectiles **EXPLOTAN al impactar** contra enemigos, muros o al alcanzar su rango máximo, causando daño explosivo en área, onda expansiva y partículas de fuego).
+     - `Cañón de Papas (Potato Cannon)` (Munición pesada especial, lanza proyectiles parabólicos pesados que **EXPLOTAN violentamente en área** al impactar, ralentizando a los sobrevivientes del radio).
+   - **Armas Cuerpo a Cuerpo (Melee):** `Puños`, `Cuchillo Bayoneta`, `Hacha de Bombero` (bono de daño contra cajas), `Katana` (mayor alcance y arco de corte), `Sartén de Hierro` (probabilidad de rebotar proyectiles de zombies tiradores).
+2. **Arrojadizas y Explosivos Abundantes:**
+   - `Granada Frag`: Explota a los 3.5s con metralla y onda expansiva.
+   - `Granada MIRV`: Explota liberando 5 mini-granadas secundarias en racimo.
+   - `Granada de Humo`: Crea una nube densa que oculta al escuadrón y hace que los zombies pierdan el rastro directo.
+   - `Baliza de Ataque Aéreo (Strobe)`: Lanza humo amarillo; 2.5 segundos después pasa la sombra de un avión bombardeando la zona con 6 explosiones masivas en cadena.
+3. **Perks Ultra-Raras (Cero Perks al Inicio — Sin Perk de Balas Explosivas):**
+   - **PROHIBIDO incluir la perk de balas explosivas para armas normales** (las explosiones son exclusivas de la USAS-12, el Cañón de Papas y las granadas/ataques aéreos).
+   - Las Cápsulas de Búnker tienen un **escudo energético bloqueado durante las Rondas 1, 2 y 3** (muestra un mensaje `"🔒 Desbloqueo en Ronda 4"`). A partir de la Ronda 4, abrir una cápsula o matar un Jefe tiene baja probabilidad (`15%`) de soltar una Perk dorada:
+     - `🔥 Munición Infinita en Reserva (/ ∞)`: No gasta balas de la mochila al recargar (pero sí requiere recargar cuando el cargador llega a 0).
+     - `🔱 Munición Splinter`: Divide cada disparo en 3 proyectiles (central al 100% y dos laterales al 45%).
+     - `🛡️ Piel de Titanio`: Reduce el daño recibido un 30% y aumenta ligeramente el tamaño del personaje.
+     - `⚡ Adrenalina Pura`: Velocidad base +15% y recarga de armas un 30% más rápida.
+     - `💉 Médico de Combate`: Reanima compañeros en `1.8s` en vez de `3.5s` y los levanta con `75 HP` + `50%` de adrenalina.
+4. **Sistema de Tienda Táctica In-Game (Estilo *Blood Strike*):**
+   - Reparte **8 Estaciones de Compra (`Buy Stations`)** por el mapa (terminales azules/doradas con antena y luz pulsante).
+   - Matar zombies otorga entre `+$20` y `+$65` Créditos Cobalto; Jefes dan `+$500`; cajas sueltan entre `+$15` y `+$80`.
+   - Al acercarse a una estación y pulsar `[B]` o el botón táctil `🛒`, se despliega una interfaz horizontal limpia dividida en pestañas rápidas:
+     - **Escuadrón & Soporte:**
+       - `Recompra de Aliados Caídos ($350)`: Revive inmediatamente a todos los compañeros muertos (descienden del cielo con efecto de paracaídas junto a ti sin esperar al fin de ronda).
+       - `Torreta Centinela Desplegable ($450)`: Coloca una torreta automática temporal con 300 HP y 120 balas que defiende un cuarto o puerta.
+       - `Baliza de Ataque Aéreo x2 ($220)`.
+     - **Suministros & Blindaje:**
+       - `Caja de Munición Máxima ($120)`: Llena todos los calibres.
+       - `Combo Adrenalina + Botiquín ($150)`: 1 Botiquín, 2 Sodas, 1 Píldoras.
+       - `Chaleco + Casco Nivel 3 ($280)`.
+       - `Mira Telescópica 4x ($200)` / `Mira 8x ($380)`.
+     - **Arsenal & Loadout (Armas Míticas desbloqueadas desde Ronda 4+):**
+       - Compra directa de `SCAR-H ($300)`, `Saiga-12 ($320)`, o a partir de Ronda 4+: `USAS-12 Explosiva ($750)`, `AWM-S ($800)`, `M249 ($700)`, `Cañón de Papas ($850)`.
+
+---
+
+## 6. ARQUETIPOS DE ZOMBIES Y JEFES DE OLEADA
+En cada oleada aumenta la cantidad y variedad de infectados:
+1. **Caminante (Walker):** Velocidad normal, ataque cuerpo a cuerpo.
+2. **Corredor (Sprinter):** Piel rojiza, más pequeño y rápido, zigzaguea ligeramente.
+3. **Blindado (Tank/Brute):** Grande, lleva restos de casco/chaleco militar, mucha vida y empuja al golpear.
+4. **Escupidor Ácido (Spitter):** Mantiene distancia y dispara globos de ácido verde que dejan un charco corrosivo temporal de 4 segundos en el piso.
+5. **Explosivo (Boomer):** Piel verde fluorescente inestable; al morir detona tras `0.6s` dañando a zombies y jugadores muy cercanos.
+6. **Jefe Titán (Aparece cada 3 rondas: Ronda 3, 6, 9...):** Gigante con barra de vida superior, invoca corredores, lanza rocas o ráfagas de plasma ácido y al morir garantiza dinero masivo, armas de alto nivel y probabilidad de Perk.
+
+---
+
+## 7. IA DEL ESCUADRÓN (Logan, Wyatt, Nolan, Brody): AUTONOMÍA REAL, FÍSICAS Y CEREBRO HÍBRIDO
+Implementa en `src/engine/aiController.js` una IA de compañeros que se sienta viva, inteligente y **100% libre de comportamientos molestos**:
+
+1. **Autonomía Real por Defecto (`🤖 MODO AUTÓNOMO`):**
+   - **PROHIBIDO que inicien siguiéndote como sombras pegadas a ti.**
+   - Al iniciar la partida, cada uno de los 4 compañeros (**Logan, Wyatt, Nolan y Brody**) elige un edificio o sector cercano diferente para ir a explorar por su cuenta.
+   - **Loteo Inteligente de Casas:** Entran por las puertas de los edificios, recorren los cuartos internos, apuntan y disparan (o golpean con melee) a las cajas y muebles para romperlos, y evalúan los ítems del suelo:
+     - Si ven un arma de mayor Tier que la suya, la recogen y cambian.
+     - Si ven un casco/chaleco/mochila de mayor nivel, se lo equipan.
+     - Recogen vendas, botiquines, sodas, píldoras y munición.
+   - **Autocuración:** Si su HP baja del `65%` y no tienen un zombie pegado, reducen velocidad y canalizan una Venda o Botiquín solos; si tienen Sodas/Píldoras, las toman para mantener su barra de Adrenalina activa.
+2. **Navegación por Context Steering (16 Rayos) + Deslizamiento en Paredes (Zero-Stuck):**
+   - Para moverse hacia un objetivo (una caja, una puerta, un compañero caído o al hacer *kiteo* hacia atrás), el bot lanza 16 vectores radiales alrededor suyo:
+     - Calcula `interest[]` (hacia dónde quiere ir) y `danger[]` (muros de edificios, muebles, rocas, árboles, agua profunda o zombies demasiado cerca).
+     - Elige la dirección resultante despejada con interpolación suave de velocidad para que nunca tiemblen ni vibren.
+     - **Anti-Atasco en Puertas y Esquinas:** Si un bot intenta cruzar una puerta cerrada, la abre automáticamente. Si la velocidad real de desplazamiento del bot es casi cero durante `0.7s` (atascado contra un mueble o marco), activa una maniobra de rodeo perpendicular automática o rompe el mueble que le estorba.
+3. **Combate y Kiteo Táctico:**
+   - Si ven zombies en su radio de visión, les disparan priorizando a los más cercanos o peligrosos (Boomers/Corredores).
+   - Si un zombie se acerca a menos de `170px`, el bot hace **Kiteo**: retrocede hacia espacios abiertos o pasillos despejados mientras sigue disparando hacia adelante.
+   - Recargan su arma automáticamente cuando el cargador llega a `0` o cuando están fuera de combate con menos del `40%` de balas.
+4. **Sistema de Abatido (Downed 38s), Rescate Prioritario (3.5s) y Respawn por Ronda:**
+   - Cuando el HP de Cole o de un compañero llega a `0`, no muere de golpe: entra en estado **ABATIDO (`downed = true`)** con un temporizador de **38 segundos de desangrado**.
+   - Mientras estás abatido puedes gatear lentamente (`speed * 0.28`) para cubrirte detrás de una puerta o muro, y se dibuja un anillo rojo/blanco de progreso sobre ti.
+   - **Prioridad Absoluta de Rescate:** En cuanto Cole o un aliado cae abatido, el compañero vivo más cercano **cancela inmediatamente su loteo**, grita por radio (ej. *"¡Cole cayó! ¡Aguanta hermano, voy corriendo por ti!"*), activa su Sprint hacia el caído, limpia a los zombies que estén encima y se queda a su lado canalizando **3.5 segundos** de reanimación hasta levantarlo con `40 HP`.
+   - **REGLA DE REAPARICIÓN EN LA SIGUIENTE RONDA:**
+     - Si un compañero se desangra por completo (o si Cole muere desangrado pero queda al menos 1 compañero vivo en el mapa), **la partida continúa**.
+     - Si Cole murió, la cámara pasa automáticamente a seguir en vivo a uno de tus compañeros vivos (puedes cambiar a cuál espectar con clic o `[Espacio]`).
+     - En el instante exacto en que muere el último zombie de la oleada actual y comienza la siguiente ronda (o si alguien los recompra en la Tienda por `$350`), **todos los miembros muertos del escuadrón (incluido Cole) reaparecen vivos al 100% de HP** junto a los sobrevivientes. Solo es *Game Over* definitivo si los 5 integrantes están muertos o abatidos al mismo tiempo.
+5. **Charla Natural, Comprensión de Órdenes y Entrega Física de Suministros (`[T]`):**
+   - **Personalidad de Amigos Reales (Cero Robótico):** Logan, Wyatt, Nolan y Brody nunca hablan como soldados de película barata (*"Afirmativo líder"*, *"A sus órdenes"*). Hablan con jerga gamer natural, bromista y fluida:
+     - Platican entre ellos espontáneamente cada 18-25 segundos según lo que pase: *"Ey Wyatt, deja de robarte todas las cajas jajaja"*, *"¡Cuidado banda, viene un Boomer verde por la derecha!"*, *"Tengo $500 ahorrados, ahorita paso a la tienda por blindaje"*, *"Uff, qué buena casa, aquí hay camas y estantes llenos"*.
+   - **Intérprete Natural Offline de Peticiones (Entrega Física de Ítems):**
+     - Cuando abres el chat con `[T]`, escribes un mensaje y presionas `[Enter]`, el input se cierra y quita el foco (`blur()`) al instante para que sigas moviéndote con `WASD`.
+     - El parser semántico analiza tu texto (sin importar mayúsculas, acentos o cómo lo redactes):
+       - Si pides **píldoras / pastillas / analgésicos** (*"denme pildoras"*, *"tienen pastillas?"*, *"pasen pildora"*): el compañero más cercano responde (ej. *"¡Claro bro! Ahí te tiré unas píldoras al suelo, tómalas"*) y **hace spawn físico de `pills` en el suelo a `45px` de Cole**.
+       - Si pides **sodas / refrescos / adrenalina** (*"me dan sodas"*, *"tienen soda?"*, *"ocupo energia"*): suelta físicamente `soda` a tu lado.
+       - Si pides **vendas / botiquín / curas / vida / heal** (*"curenme"*, *"ocupo botiquin"*, *"tiren vendas"*): se acerca y suelta un `medkit` o `bandage` a tus pies.
+       - Si pides **balas / munición** (*"denme balas"*, *"no tengo municion"*, *"pasen 556 / escopeta / 9mm"*): detecta qué calibre usa el arma que tienes en la mano (o el que mencionaste) y suelta cajas de munición de ese calibre junto a ti.
+       - Si pides **dinero / créditos / plata** (*"presten dinero para la tienda"*, *"Les sobra plata?"*): te transfiere o suelta un fajo de `+$150` Créditos Cobalto.
+       - Si das **órdenes de comportamiento**:
+         - *"no me sigan" / "quédense ahí" / "quietos" / "esperen"* -> Pasan a modo `✋ HOLD` (se quedan defendiendo esa zona sin seguirte).
+         - *"vayan a lotear" / "libres" / "sepárense" / "exploren"* -> Pasan a modo `🤖 AUTÓNOMO / LOOT`.
+         - *"síganme" / "vengan conmigo" / "ayúdenme" / "júntense"* -> Pasan a modo `🏃 FOLLOW` (vienen rápido a escoltarte).
+         - *"vayan a cazar" / "maten a todos" / "ataquen"* -> Pasan a modo `🎯 HUNT`.
+         - *"no disparen" / "déjenmelos a mí" / "modo paz"* -> Pasan a modo `🕊️ PEACE` (guardan las armas y te dejan matar a todos los zombies a ti).
+6. **Puente Opcional de IA Generativa en Vivo (`cloudBrain.js` con Gemini API):**
+   - Si el usuario introduce su API Key de Google AI Studio en el modal de Ajustes (guardada en `localStorage.getItem('GEMINI_API_KEY')`) y el dispositivo tiene Internet, cada vez que el jugador escribe en el chat `[T]`, además del parser rápido, se envía una petición `fetch` a `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent` con `responseMimeType: "application/json"`.
+   - Se le inyecta el estado vivo de la partida (vida de Cole, arma, dinero, ronda, estado de Logan, Wyatt, Nolan y Brody) y devuelve un JSON `{ "speaker": "Logan|Wyatt|Nolan|Brody", "reply": "texto natural", "secondarySpeaker": "opcional", "secondaryReply": "opcional", "action": "NONE|DROP_PILLS|DROP_SODA|DROP_MEDKIT|DROP_AMMO|GIVE_CASH|SET_MODE_ROAM|SET_MODE_HOLD|SET_MODE_FOLLOW|SET_MODE_HUNT|SET_MODE_PEACE" }` que ejecuta la acción real dentro del motor del juego. Si no hay API Key o falla la red, usa instantáneamente el cerebro Offline sin mostrar ningún error.
+
+---
+
+## 8. ESTRUCTURA MODULAR DE ARCHIVOS REQUERIDA
+Genera todos los archivos completos y conectados limpiamente:
+1. `src/config/constants.js` — Estadísticas completas de todas las armas (Tier 1 a 4), muebles, biomas, catálogo de la Tienda Táctica, arquetipos de zombies y banco extenso de diálogos coloquiales offline.
+2. `src/engine/textures.js` — Generador de texturas procedurales en `OffscreenCanvas` (césped, agua, arena, pisos de madera, cerámica, concreto y metal de búnker).
+3. `src/engine/worldGen.js` — Generación del mapa `15,000 x 15,000`, río sinuoso con 4 puentes, 5 búnkeres subterráneos aislados, 8 estaciones de Tienda y más de 45 casas multicámara con paredes internas, puertas, muebles detallados y 1-3 cajas garantizadas por edificio.
+4. `src/engine/aiController.js` — Navegación Context Steering de 16 rayos con deslizamiento anti-atasco, autonomía de exploración de cuartos, autocuración, rescate prioritario de 3.5s, intérprete semántico de chat offline (entrega de sodas/píldoras/balas/órdenes) y cliente `fetch` para Gemini Cloud API.
+5. `src/engine/renderer.js` — Renderizado top-down con sombras proyectadas, árboles multicapa translúcidos, muebles detallados, armas compuestas en manos, fogonazos, casquillos con rebote y sistema `decals[]` con fade-out automático de 8s para sangre y cráteres.
+6. `src/App.jsx` — Componente principal con bloqueo de orientación horizontal, menú de inicio minimalista, bucle de motor a 60 FPS en `useRef`, HUD móvil micro-compacto, Joysticks dinámicos flotantes, mecánica de Drop con clic derecho / long-press, Modal de Tienda estilo Blood Strike, Mapa Táctico interactivo y Chat `[T]`.

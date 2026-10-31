@@ -1,0 +1,6 @@
+{
+  "name": "SURVEV PVE: Tactical Strike",
+  "description": "2D Top-Down Tactical Battle Royale PvE Survival Shooter with autonomous AI squadmates, multi-room furnished buildings, underground bunkers, and Blood Strike tactical buy stations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
